@@ -1,13 +1,13 @@
-.MMM-air-raid-monitor-ua-wrapper {
+.MagicMirror-air-raid-monitor-ua-wrapper {
   position: relative;
 }
 
-.MMM-air-raid-monitor-ua-wrapper svg {
+.MagicMirror-air-raid-monitor-ua svg {
   width: 100%;
   height: auto;
 }
 
-.MMM-air-raid-monitor-ua-wrapper [class*="air-raid-status"] {
+.MagicMirror-air-raid-monitor-ua-wrapper [class*="air-raid-status"] {
   display: block;
 }
 
