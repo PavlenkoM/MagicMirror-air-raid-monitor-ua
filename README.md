@@ -1,7 +1,7 @@
 #  MagicMirror-air-raid-monitor-ua
 
-This is an extension for the [MagicMirror](https://github.com/MichMich/MagicMirror). It shows the current status of air raid sirens in Ukraine.
-Based on data from [sirens.in.ua](https://sirens.in.ua/).
+This is an extension for the [MagicMirror](https://github.com/MichMich/MagicMirror). It shows the current status of air raid alerts across Ukraine's regions on a map of the country.
+Based on data from the [UkraineAlarm API](https://www.ukrainealarm.com/) — you'll need an API key from that service to use this module.
 
 <img width="328" alt="Знімок екрана 2022-05-31 о 22 59 29" src="https://user-images.githubusercontent.com/9430298/171278252-afbf185c-b40f-4214-8292-6fa9d43af002.png">
 
@@ -16,7 +16,7 @@ modules: [
 		module: 'MagicMirror-air-raid-monitor-ua',
 		config: {
       apiKey: 'YOUR_API_KEY',
-			updateInterval: 60
+			updateInterval: 90
 		}
 	}
 ]
@@ -28,7 +28,7 @@ The following properties can be configured:
 | Option | Description |
 | --- | --- |
 | `apiKey` | Your API key for accessing the air raid data. |
-| `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. Min value 60 seconds — the ukrainealarm.com API rate-limits each key to about one request per minute and answers faster polling with empty `401` responses. |
+| `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. Default and minimum value 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and answers faster polling with empty `401` responses, so the module keeps a safety margin above that limit. |
 
 #### Version of this widget for other platforms:
 * [Windows](https://github.com/dr-mod/air-raid-widget-windows)
