@@ -25,12 +25,13 @@ have an active alert, paint the whole oblast `full` instead of `partial`.
 
 1. **What counts as a "part":** every District and Community node under the
    oblast, counted flatly in one denominator (not leaf-communities-only, not
-   districts-only). A district-level alert that has no separate per-community
-   alert entries counts as exactly one "part" alerted, same weight as a single
-   alerted community. This was chosen over leaf-only counting because it
-   requires no extra logic to translate a district-level alert into "all its
-   communities," and over district-only counting because it would make the
-   threshold trigger on far coarser events.
+   districts-only). ~~A district-level alert that has no separate
+   per-community alert entries counts as exactly one "part" alerted, same
+   weight as a single alerted community.~~ **Superseded — see Addendum below:**
+   a district-level alert now cascades to count all of that district's own
+   communities as alerted too, instead of counting the district as a single
+   flat unit. The flat *denominator* (total parts) is unchanged; only how the
+   *numerator* counts a district alert changed.
 2. **Threshold is user-configurable**, not hardcoded, via
    `config.fullAlertThreshold` (default `0.5`), consistent with how
    `updateInterval` is already exposed in `defaults`.
@@ -111,3 +112,81 @@ alert data cannot be relied on to reproduce a >50% scenario on demand.
   `node_helper.js`.
 - Making the "what counts as a part" rule itself configurable — only the
   threshold fraction is.
+
+## Addendum (2026-07-05, post-deployment): cascade district alerts to communities
+
+**Finding:** after merging the initial version to `state-full-alert` and
+checking it against live data, two frontline oblasts — Zaporizhzhya
+(oblastId `12`) and Donets'k (oblastId `28`) — stayed `partial` when every
+single one of their districts was under active alert, which reads as
+counter-intuitive: "100% of an oblast's districts alerted" should plausibly
+mean the oblast is fully covered.
+
+Root cause, confirmed against real `/alerts` data fetched through the
+isolated test instance: Zaporizhzhya has 72 total parts (5 districts + their
+~66 communities + the mistyped top-level community `564`); the 6 alerted
+entries were regionIds `145`–`149` (all 5 of Zaporizhzhya's districts) plus
+`564` — i.e. **every district** was alerted, but *none* of the ~66
+communities underneath had their own separate alert entries. Ratio: 6/72 ≈
+8%, nowhere near the 50% threshold. Donets'k showed the identical pattern:
+all 8 of its districts alerted (regionIds `49`–`56`), 8/74 ≈ 11%. In both
+cases the real API reports alerts at district granularity only — it does not
+cascade an alert down to emit a separate entry per community. The flat
+"1 unit per node regardless of level" counting rule (original Decision 1)
+treats a fully-alerted district as worth exactly the same as one single
+alerted community out of ~15-16 siblings, which silently dilutes exactly the
+scenario this feature was built to detect.
+
+**Decision:** when a District-level entry itself has an active alert, count
+*all* of that district's own communities as alerted too (not just the
+district as one flat unit), instead of requiring each community to have its
+own separate alert entry. The total-parts denominator from Decision 1 is
+unchanged (still every District + Community node, flat) — only the
+numerator's counting rule changes for entries that turn out to be Districts
+with their own children.
+
+This was chosen over two alternatives, presented with the real numbers above:
+- **Districts-only counting** (drop communities from both numerator and
+  denominator): simpler, and would also produce `full` for both oblasts
+  today, but throws away community-level granularity entirely, including for
+  any future case where the API *does* report alerts at community level
+  without the parent district also being alerted.
+- **Just lowering the threshold**: cheapest, no logic change, but arbitrary —
+  the "right" threshold would depend on each oblast's district-to-community
+  ratio (varies from ~4 districts/50 communities to ~8 districts/74
+  communities across oblasts), so a single global threshold can't be tuned to
+  work correctly for all of them at once.
+
+### Implementation
+
+`loadRegions()`'s walk needs one more piece of tree shape it currently
+throws away: which regionIds are each node's *immediate* children (today it
+only keeps `regionId → oblastId` and a flat total count). Add a sibling map,
+`this.childrenByRegionId` (`regionId → string[]` of immediate child
+regionIds, from `region.regionChildIds`), built in the same walk, reset on
+the same weekly refresh. A leaf node (a Community, or a childless oblast
+like Kyiv City/Crimea) simply has no entry (or an empty array).
+
+In `getRegionStatuses()`, replace the flat `alertedPartsByOblast` counter
+with a per-oblast `Set` of "covered" regionIds. For each non-self alerted
+entry, add its own regionId to the oblast's covered set, **and** recursively
+add every ID in `this.childrenByRegionId[entry.regionId]` (and their
+children, etc. — though today's hierarchy is only ever District→Community,
+one level deep) to the same set. The ratio becomes
+`coveredSet.size / totalPartsByOblast[oblastId]`. A `Set` (not a running sum)
+is required so that a district's alert and one of its own community's alerts
+don't get double-counted if both happen to appear in the same `/alerts`
+response.
+
+Self-alert-always-wins (Decision 4), the strict `>` comparison (Decision 3),
+the configurable threshold (Decision 2), and the childless-oblast handling
+(Decision 5) are all unchanged by this addendum.
+
+### Testing
+
+Same manual-verification approach as before (isolated port-8081 instance),
+plus this addendum was *discovered* by, and should be *re-verified* against,
+real live `/alerts` data for Zaporizhzhya (`12`) and Donets'k (`28`) — after
+the fix, both should compute `alertedParts` at or near `totalPartsByOblast`
+(cascading covers nearly the whole subtree when every district is alerted)
+and render `full`, not `partial`.
