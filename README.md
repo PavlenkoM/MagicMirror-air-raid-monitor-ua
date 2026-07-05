@@ -29,6 +29,7 @@ The following properties can be configured:
 | --- | --- |
 | `apiKey` | Your API key for accessing the air raid data. |
 | `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. Default and minimum value 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and answers faster polling with empty `401` responses, so the module keeps a safety margin above that limit. |
+| `fullAlertThreshold` | Fraction (0–1) of an oblast's districts/communities that must be under alert before the whole oblast is painted "full" instead of "partial". Strict greater-than (exactly at the threshold stays "partial"). Default `0.5`. |
 
 ## License
 This module is licensed under the [MIT License](LICENSE.md).
