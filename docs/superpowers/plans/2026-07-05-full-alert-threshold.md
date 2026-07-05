@@ -510,8 +510,252 @@ No commit for this task (verification only) — report back what was observed in
 
 ---
 
+### Task 4 (addendum, post-deployment): cascade district alerts to their communities
+
+Added after checking the shipped Tasks 1-3 against real live `/alerts` data:
+Zaporizhzhya (`12`) and Donets'k (`28`) stayed `partial` while literally every
+one of their districts was alerted, because the real API reports alerts at
+district granularity only — see the spec's "Addendum (2026-07-05,
+post-deployment)" section for the full root-cause writeup and the real
+region IDs observed.
+
+**Files:**
+- Modify: `MagicMirror-air-raid-monitor-ua.js` (instance state block, `loadRegions`, `getRegionStatuses`)
+- Modify: `test/load-regions.test.js` (extend the existing test with a `childrenByRegionId` assertion)
+- Modify: `test/get-region-statuses.test.js` (add 3 new cascade-specific tests)
+
+**Interfaces:**
+- Produces: `this.childrenByRegionId` (`Object<string, string[]>`) — regionId → immediate child regionIds, sparse (only nodes with at least one child get an entry), built in the same `loadRegions` walk as `regionToOblast`/`totalPartsByOblast`.
+- Consumes (in `getRegionStatuses`): `this.childrenByRegionId`, in addition to everything Task 2 already consumed. The 8 existing tests in `test/get-region-statuses.test.js` must still pass unchanged — they never set `childrenByRegionId`, so `this.childrenByRegionId?.[id] || []` yields `[]` for them and the new code behaves exactly like Task 2's flat counter did.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `test/load-regions.test.js`, add one more assertion inside the existing `test(...)` block, right after the `totalPartsByOblast` assertions (do not duplicate the fixture or add a new `test(...)`):
+
+```js
+	assert.deepEqual(instance.childrenByRegionId, {
+		'12': ['201', '202'],
+		'201': ['301', '302'],
+		'202': ['303', '304'],
+	});
+```
+
+In `test/get-region-statuses.test.js`, add these three new tests (after the existing `'no active alerts anywhere yields an empty result'` test, before the closing of the file):
+
+```js
+test('a district alert cascades to cover all of its own communities', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15' },
+		totalPartsByOblast: { '15': 3 }, // 1 district + 2 communities
+		childrenByRegionId: { '81': ['760', '761'] },
+		airRaidData: [
+			{ regionId: '81', activeAlerts: [{ type: 'AIR' }] }, // district-level alert only, no per-community entries
+		],
+	});
+
+	// covered = {81, 760, 761} = all 3 parts -> 100% > 50% -> full
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'full' });
+});
+
+test('a community alert with no district-level alert only counts itself, not cascaded', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15' },
+		totalPartsByOblast: { '15': 3 },
+		childrenByRegionId: { '81': ['760', '761'] },
+		airRaidData: [
+			{ regionId: '760', activeAlerts: [{ type: 'AIR' }] }, // only one community alerted, district itself not alerted
+		],
+	});
+
+	// covered = {760} = 1 of 3 parts ≈ 33% -> partial
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'partial' });
+});
+
+test('cascade does not double-count when a community under an already-covered district also has its own alert entry', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15', '82': '15', '770': '15', '771': '15' },
+		totalPartsByOblast: { '15': 6 }, // 2 districts + 4 communities
+		childrenByRegionId: { '81': ['760', '761'], '82': ['770', '771'] },
+		airRaidData: [
+			{ regionId: '81', activeAlerts: [{ type: 'AIR' }] }, // covers 81, 760, 761 (district + its 2 communities)
+			{ regionId: '760', activeAlerts: [{ type: 'AIR' }] }, // redundant - already covered by 81's cascade
+		],
+	});
+
+	// covered = {81, 760, 761} = 3 of 6 parts = exactly 50% -> NOT > 0.5 (strict) -> stays partial.
+	// A buggy implementation that double-counts the redundant 760 entry (e.g. summing
+	// alert-entry counts instead of a Set) would land on 4/6 ≈ 67% -> full instead.
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'partial' });
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `node --test test/load-regions.test.js`
+Expected: FAIL — `AssertionError` comparing `instance.childrenByRegionId` (`undefined`, since `loadRegions` doesn't build it yet) against the expected object.
+
+Run: `node --test test/get-region-statuses.test.js`
+Expected: FAIL — the 3 new tests fail (the district-only alert at `regionId: '81'` currently counts as exactly 1 flat part, not cascading to `760`/`761`, so the ratios don't match the expected `full`/`partial` verdicts above). The 8 pre-existing tests in this file should still PASS at this point (nothing about them changed).
+
+- [ ] **Step 3: Implement**
+
+In `MagicMirror-air-raid-monitor-ua.js`, add `childrenByRegionId: null,` to the instance state block (right after `totalPartsByOblast: null,`):
+
+```js
+	regionToOblast: null,
+	totalPartsByOblast: null,
+	childrenByRegionId: null,
+	regionsLoadedAt: 0,
+```
+
+Replace the body of `loadRegions` (extends Task 1's version with the `childrenByRegionId` tally):
+
+```js
+	loadRegions: async function() {
+		if (this.regionToOblast && Date.now() - this.regionsLoadedAt < REGIONS_REFRESH_INTERVAL) {
+			return;
+		}
+
+		try {
+			const { states } = await this.fetchLocal('/regions');
+
+			const regionToOblast = {};
+			const totalPartsByOblast = {};
+			const childrenByRegionId = {};
+			const walk = (region, oblastId) => {
+				regionToOblast[region.regionId] = oblastId;
+				if (region.regionId !== oblastId) {
+					totalPartsByOblast[oblastId] = (totalPartsByOblast[oblastId] || 0) + 1;
+				}
+				const childIds = (region.regionChildIds || []).map(child => child.regionId);
+				if (childIds.length) {
+					childrenByRegionId[region.regionId] = childIds;
+				}
+				(region.regionChildIds || []).forEach(child => walk(child, oblastId));
+			};
+			states.forEach(state => walk(state, TOP_LEVEL_COMMUNITY_TO_OBLAST[state.regionId] || state.regionId));
+
+			this.regionToOblast = regionToOblast;
+			this.totalPartsByOblast = totalPartsByOblast;
+			this.childrenByRegionId = childrenByRegionId;
+			this.regionsLoadedAt = Date.now();
+		} catch (e) {
+			Log.error(e);
+		}
+	},
+```
+
+Replace `getRegionStatuses` (extends Task 2's version — the self-alert branch, the `>` comparison, and the childless-oblast guard are all unchanged; only the flat counter becomes a cascading `Set`):
+
+```js
+	// Turns the API's alert entries into { svgRegionName: status }: an oblast's
+	// own alert always marks it "full"; a district's own alert covers all of
+	// its communities too (the real API reports alerts at district
+	// granularity, not per-community); otherwise it's "full" once more than
+	// config.fullAlertThreshold of its districts/communities are covered,
+	// else "partial" for any lesser fraction.
+	getRegionStatuses: function () {
+		const result = {};
+		if (!Array.isArray(this.airRaidData) || !this.regionToOblast) {
+			return result;
+		}
+
+		const selfAlertedOblasts = new Set();
+		const coveredPartsByOblast = {};
+
+		const addCovered = (oblastId, regionId) => {
+			if (!coveredPartsByOblast[oblastId]) {
+				coveredPartsByOblast[oblastId] = new Set();
+			}
+			const covered = coveredPartsByOblast[oblastId];
+			if (covered.has(regionId)) {
+				return;
+			}
+			covered.add(regionId);
+			(this.childrenByRegionId?.[regionId] || []).forEach(childId => addCovered(oblastId, childId));
+		};
+
+		this.airRaidData.forEach(entry => {
+			if (!entry.activeAlerts?.length) {
+				return;
+			}
+
+			const oblastId = this.regionToOblast[entry.regionId];
+			if (!oblastId) {
+				return;
+			}
+
+			if (entry.regionId === oblastId) {
+				selfAlertedOblasts.add(oblastId);
+			} else {
+				addCovered(oblastId, entry.regionId);
+			}
+		});
+
+		const alertedOblastIds = new Set([...selfAlertedOblasts, ...Object.keys(coveredPartsByOblast)]);
+		alertedOblastIds.forEach(oblastId => {
+			const svgName = OBLAST_ID_TO_SVG_NAME[oblastId];
+			if (!svgName) {
+				return;
+			}
+
+			if (selfAlertedOblasts.has(oblastId)) {
+				result[svgName] = this.status.full;
+				return;
+			}
+
+			const totalParts = this.totalPartsByOblast?.[oblastId] || 0;
+			const alertedParts = coveredPartsByOblast[oblastId]?.size || 0;
+			const ratio = totalParts > 0 ? alertedParts / totalParts : 0;
+			result[svgName] = ratio > this.config.fullAlertThreshold ? this.status.full : this.status.partial;
+		});
+
+		return result;
+	},
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `node --test test/load-regions.test.js`
+Expected: PASS — 1 test, 0 failures.
+
+Run: `node --test test/get-region-statuses.test.js`
+Expected: PASS — 11 tests, 0 failures (8 pre-existing + 3 new).
+
+Then run the full suite (plain `node --test`, no path argument):
+
+Run: `node --test`
+Expected: PASS — 12 tests total, 0 failures.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add MagicMirror-air-raid-monitor-ua.js test/load-regions.test.js test/get-region-statuses.test.js
+git commit -m "$(cat <<'EOF'
+Cascade a district's alert to its own communities
+
+Real /alerts data showed Zaporizhzhya and Donets'k staying "partial"
+while every one of their districts was alerted, because the API
+reports alerts at district granularity only, never cascading down to
+individual communities. A district's own alert now counts all of its
+communities as covered too (via a new childrenByRegionId map built in
+the same /regions walk), instead of counting the district as a single
+flat unit among ~15 sibling communities.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+- [ ] **Step 6: Re-verify against real live data**
+
+Using the same isolated port-8081 test instance approach as Task 3 (see the `magicmirror-test-instance-recipe` project memory), load the module against real `/alerts` data and inspect `air.getRegionStatuses()` in the browser console for Zaporizhzhya (`12`) and Donets'k (`28`) specifically. Since live alert conditions change, there's no fixed "expected" output — the point is to confirm the ratios and resulting status are now computed correctly per the new cascading logic (spot-check a couple of the underlying `airRaidData` entries against `childrenByRegionId` by hand, the way the spec addendum's root-cause numbers were derived), not to assert a specific oblast is `full` at the moment you check.
+
+---
+
 ## Self-Review Notes
 
-- **Spec coverage:** all 5 spec §Decisions items map to Task 1 (parts counting) or Task 2 (threshold config, strict `>`, self-alert priority, childless-oblast safety); the spec's Testing section maps to Task 3, extended with the unit tests per this session's follow-up decision.
-- **Type consistency:** `regionToOblast`/`totalPartsByOblast` keys are oblastId strings throughout (Task 1 produces them from `region.regionId` JSON strings; Task 2 consumes them via the same string keys) — verified no numeric/string key mismatches.
+- **Spec coverage:** all 5 spec §Decisions items map to Task 1 (parts counting) or Task 2 (threshold config, strict `>`, self-alert priority, childless-oblast safety); the spec's Testing section maps to Task 3, extended with the unit tests per this session's follow-up decision. The spec's Addendum (cascading) maps to Task 4.
+- **Type consistency:** `regionToOblast`/`totalPartsByOblast`/`childrenByRegionId` keys are oblastId or regionId strings throughout (Task 1/4 produce them from `region.regionId` JSON strings; Task 2/4 consume them via the same string keys) — verified no numeric/string key mismatches.
 - **No placeholders:** all steps contain full runnable code and exact commands.
+- **Backward compatibility:** Task 4's rewrite of `getRegionStatuses` is a strict generalization of Task 2's — every existing test fixture omits `childrenByRegionId`, so `this.childrenByRegionId?.[id] || []` resolves to `[]` and the new `Set`-based accumulation behaves identically to the old flat counter for all 8 of Task 2's tests. No existing test needed to change.
