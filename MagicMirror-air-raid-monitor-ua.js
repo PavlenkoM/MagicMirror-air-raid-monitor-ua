@@ -62,6 +62,7 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	mapSVG: null,
 	storedActionIndex: null,
 	regionToOblast: null,
+	totalPartsByOblast: null,
 	regionsLoadedAt: 0,
 
 	getStyles: function() {
@@ -136,14 +137,19 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		try {
 			const { states } = await this.fetchLocal('/regions');
 
-			const map = {};
+			const regionToOblast = {};
+			const totalPartsByOblast = {};
 			const walk = (region, oblastId) => {
-				map[region.regionId] = oblastId;
+				regionToOblast[region.regionId] = oblastId;
+				if (region.regionId !== oblastId) {
+					totalPartsByOblast[oblastId] = (totalPartsByOblast[oblastId] || 0) + 1;
+				}
 				(region.regionChildIds || []).forEach(child => walk(child, oblastId));
 			};
 			states.forEach(state => walk(state, TOP_LEVEL_COMMUNITY_TO_OBLAST[state.regionId] || state.regionId));
 
-			this.regionToOblast = map;
+			this.regionToOblast = regionToOblast;
+			this.totalPartsByOblast = totalPartsByOblast;
 			this.regionsLoadedAt = Date.now();
 		} catch (e) {
 			Log.error(e);
