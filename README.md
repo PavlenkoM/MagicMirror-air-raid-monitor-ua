@@ -15,8 +15,9 @@ modules: [
 	{
 		module: 'MagicMirror-air-raid-monitor-ua',
 		config: {
-      apiKey: 'YOUR_API_KEY',
-			updateInterval: 90
+      		apiKey: 'YOUR_API_KEY',
+			updateInterval: 90,
+			fullAlertThreshold: 0.5,
 		}
 	}
 ]
