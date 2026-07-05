@@ -150,3 +150,33 @@ test('cascade does not double-count when a community under an already-covered di
 	// alert-entry counts instead of a Set) would land on 4/6 ≈ 67% -> full instead.
 	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'partial' });
 });
+
+test('an oblast that is both self-alerted and has alerted parts is full (self-alert wins over ratio)', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '82': '15', '83': '15', '84': '15' },
+		totalPartsByOblast: { '15': 4 },
+		childrenByRegionId: {},
+		airRaidData: [
+			{ regionId: '15', activeAlerts: [{ type: 'AIR' }] }, // the oblast's own alert
+			{ regionId: '81', activeAlerts: [{ type: 'AIR' }] }, // 1 of 4 parts = 25%, "partial" on its own
+		],
+	});
+
+	// self-alert must win: full, even though the alerted-parts ratio alone (25%) is below threshold.
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'full' });
+});
+
+test('an alert on a mistyped top-level community (564) counts as a covered part of its real oblast, not a self-alert', () => {
+	const instance = makeInstance({
+		regionToOblast: { '12': '12', '145': '12', '564': '12' }, // 564 is typed "State" by the API but belongs to oblast 12
+		totalPartsByOblast: { '12': 2 }, // one district (145) + the top-level community (564)
+		childrenByRegionId: {},
+		airRaidData: [
+			{ regionId: '564', activeAlerts: [{ type: 'AIR' }] },
+		],
+	});
+
+	// 564 maps to oblast 12 but is not the oblast self-entry, so it's counted as one covered
+	// part (not a self-alert that would force full): 1 of 2 = exactly 50%, not > 50% -> partial.
+	assert.deepEqual(instance.getRegionStatuses(), { Zaporizhzhya: 'partial' });
+});
