@@ -35,3 +35,6 @@ The following properties can be configured:
 * [Linux](https://github.com/dr-mod/air-raid-widget-linux)
 * [macOS](https://github.com/dr-mod/air-raid-widget-macos)
 * [RaspberryPi](https://github.com/dr-mod/air-raid-monitor)
+
+## License
+This module is licensed under the [MIT License](LICENSE.md).
