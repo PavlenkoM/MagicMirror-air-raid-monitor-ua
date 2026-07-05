@@ -11,6 +11,7 @@ function makeInstance(overrides = {}) {
 		config: { fullAlertThreshold: 0.5 },
 		regionToOblast: {},
 		totalPartsByOblast: {},
+		childrenByRegionId: null,
 		airRaidData: [],
 	}, overrides);
 }
@@ -103,4 +104,49 @@ test('no active alerts anywhere yields an empty result', () => {
 	});
 
 	assert.deepEqual(instance.getRegionStatuses(), {});
+});
+
+test('a district alert cascades to cover all of its own communities', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15' },
+		totalPartsByOblast: { '15': 3 }, // 1 district + 2 communities
+		childrenByRegionId: { '81': ['760', '761'] },
+		airRaidData: [
+			{ regionId: '81', activeAlerts: [{ type: 'AIR' }] }, // district-level alert only, no per-community entries
+		],
+	});
+
+	// covered = {81, 760, 761} = all 3 parts -> 100% > 50% -> full
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'full' });
+});
+
+test('a community alert with no district-level alert only counts itself, not cascaded', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15' },
+		totalPartsByOblast: { '15': 3 },
+		childrenByRegionId: { '81': ['760', '761'] },
+		airRaidData: [
+			{ regionId: '760', activeAlerts: [{ type: 'AIR' }] }, // only one community alerted, district itself not alerted
+		],
+	});
+
+	// covered = {760} = 1 of 3 parts ≈ 33% -> partial
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'partial' });
+});
+
+test('cascade does not double-count when a community under an already-covered district also has its own alert entry', () => {
+	const instance = makeInstance({
+		regionToOblast: { '15': '15', '81': '15', '760': '15', '761': '15', '82': '15', '770': '15', '771': '15' },
+		totalPartsByOblast: { '15': 6 }, // 2 districts + 4 communities
+		childrenByRegionId: { '81': ['760', '761'], '82': ['770', '771'] },
+		airRaidData: [
+			{ regionId: '81', activeAlerts: [{ type: 'AIR' }] }, // covers 81, 760, 761 (district + its 2 communities)
+			{ regionId: '760', activeAlerts: [{ type: 'AIR' }] }, // redundant - already covered by 81's cascade
+		],
+	});
+
+	// covered = {81, 760, 761} = 3 of 6 parts = exactly 50% -> NOT > 0.5 (strict) -> stays partial.
+	// A buggy implementation that double-counts the redundant 760 entry (e.g. summing
+	// alert-entry counts instead of a Set) would land on 4/6 ≈ 67% -> full instead.
+	assert.deepEqual(instance.getRegionStatuses(), { Kirovohrad: 'partial' });
 });

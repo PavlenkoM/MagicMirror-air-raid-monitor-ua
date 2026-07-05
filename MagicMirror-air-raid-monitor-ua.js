@@ -66,6 +66,7 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	storedActionIndex: null,
 	regionToOblast: null,
 	totalPartsByOblast: null,
+	childrenByRegionId: null,
 	regionsLoadedAt: 0,
 
 	getStyles: function() {
@@ -130,9 +131,9 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		return this.mapSVG;
 	},
 
-	// Builds regionId -> oblast regionId, and oblastId -> descendant part count,
-	// from the /regions hierarchy. Cached by the node_helper, so only the first
-	// request after a MagicMirror start goes upstream.
+	// Builds regionId -> oblast regionId, oblastId -> descendant part count, and
+	// regionId -> immediate child regionIds, from the /regions hierarchy. Cached by
+	// the node_helper, so only the first request after a MagicMirror start goes upstream.
 	loadRegions: async function() {
 		if (this.regionToOblast && Date.now() - this.regionsLoadedAt < REGIONS_REFRESH_INTERVAL) {
 			return;
@@ -143,10 +144,15 @@ Module.register(AIR_RAID_MODULE_NAME, {
 
 			const regionToOblast = {};
 			const totalPartsByOblast = {};
+			const childrenByRegionId = {};
 			const walk = (region, oblastId) => {
 				regionToOblast[region.regionId] = oblastId;
 				if (region.regionId !== oblastId) {
 					totalPartsByOblast[oblastId] = (totalPartsByOblast[oblastId] || 0) + 1;
+				}
+				const childIds = (region.regionChildIds || []).map(child => child.regionId);
+				if (childIds.length) {
+					childrenByRegionId[region.regionId] = childIds;
 				}
 				(region.regionChildIds || []).forEach(child => walk(child, oblastId));
 			};
@@ -154,6 +160,7 @@ Module.register(AIR_RAID_MODULE_NAME, {
 
 			this.regionToOblast = regionToOblast;
 			this.totalPartsByOblast = totalPartsByOblast;
+			this.childrenByRegionId = childrenByRegionId;
 			this.regionsLoadedAt = Date.now();
 		} catch (e) {
 			Log.error(e);
@@ -230,9 +237,11 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	},
 
 	// Turns the API's alert entries into { svgRegionName: status }: an oblast's
-	// own alert always marks it "full"; otherwise it's "full" once more than
-	// config.fullAlertThreshold of its districts/communities have an alert of
-	// their own, else "partial" for any lesser fraction.
+	// own alert always marks it "full"; a district's own alert covers all of
+	// its communities too (the real API reports alerts at district
+	// granularity, not per-community); otherwise it's "full" once more than
+	// config.fullAlertThreshold of its districts/communities are covered,
+	// else "partial" for any lesser fraction.
 	getRegionStatuses: function () {
 		const result = {};
 		if (!Array.isArray(this.airRaidData) || !this.regionToOblast) {
@@ -240,7 +249,19 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		}
 
 		const selfAlertedOblasts = new Set();
-		const alertedPartsByOblast = {};
+		const coveredPartsByOblast = {};
+
+		const addCovered = (oblastId, regionId) => {
+			if (!coveredPartsByOblast[oblastId]) {
+				coveredPartsByOblast[oblastId] = new Set();
+			}
+			const covered = coveredPartsByOblast[oblastId];
+			if (covered.has(regionId)) {
+				return;
+			}
+			covered.add(regionId);
+			(this.childrenByRegionId?.[regionId] || []).forEach(childId => addCovered(oblastId, childId));
+		};
 
 		this.airRaidData.forEach(entry => {
 			if (!entry.activeAlerts?.length) {
@@ -255,11 +276,11 @@ Module.register(AIR_RAID_MODULE_NAME, {
 			if (entry.regionId === oblastId) {
 				selfAlertedOblasts.add(oblastId);
 			} else {
-				alertedPartsByOblast[oblastId] = (alertedPartsByOblast[oblastId] || 0) + 1;
+				addCovered(oblastId, entry.regionId);
 			}
 		});
 
-		const alertedOblastIds = new Set([...selfAlertedOblasts, ...Object.keys(alertedPartsByOblast)]);
+		const alertedOblastIds = new Set([...selfAlertedOblasts, ...Object.keys(coveredPartsByOblast)]);
 		alertedOblastIds.forEach(oblastId => {
 			const svgName = OBLAST_ID_TO_SVG_NAME[oblastId];
 			if (!svgName) {
@@ -272,7 +293,8 @@ Module.register(AIR_RAID_MODULE_NAME, {
 			}
 
 			const totalParts = this.totalPartsByOblast?.[oblastId] || 0;
-			const ratio = totalParts > 0 ? alertedPartsByOblast[oblastId] / totalParts : 0;
+			const alertedParts = coveredPartsByOblast[oblastId]?.size || 0;
+			const ratio = totalParts > 0 ? alertedParts / totalParts : 0;
 			result[svgName] = ratio > this.config.fullAlertThreshold ? this.status.full : this.status.partial;
 		});
 

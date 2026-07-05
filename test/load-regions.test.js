@@ -10,6 +10,7 @@ function makeInstance(overrides = {}) {
 	return Object.assign(Object.create(moduleDefinition), {
 		regionToOblast: null,
 		totalPartsByOblast: null,
+		childrenByRegionId: null,
 		regionsLoadedAt: 0,
 	}, overrides);
 }
@@ -70,4 +71,10 @@ test('loadRegions tallies regionToOblast and totalPartsByOblast from the /region
 		'12': 7, // 2 districts + 4 communities + the 564 top-level community
 	});
 	assert.equal(instance.totalPartsByOblast['9999'], undefined);
+
+	assert.deepEqual(instance.childrenByRegionId, {
+		'12': ['201', '202'],
+		'201': ['301', '302'],
+		'202': ['303', '304'],
+	});
 });
