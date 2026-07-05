@@ -30,11 +30,5 @@ The following properties can be configured:
 | `apiKey` | Your API key for accessing the air raid data. |
 | `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. Default and minimum value 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and answers faster polling with empty `401` responses, so the module keeps a safety margin above that limit. |
 
-#### Version of this widget for other platforms:
-* [Windows](https://github.com/dr-mod/air-raid-widget-windows)
-* [Linux](https://github.com/dr-mod/air-raid-widget-linux)
-* [macOS](https://github.com/dr-mod/air-raid-widget-macos)
-* [RaspberryPi](https://github.com/dr-mod/air-raid-monitor)
-
 ## License
 This module is licensed under the [MIT License](LICENSE.md).
