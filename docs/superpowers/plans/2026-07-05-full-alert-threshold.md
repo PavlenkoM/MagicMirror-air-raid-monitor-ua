@@ -23,34 +23,37 @@
 ## File Structure
 
 - **Modify `MagicMirror-air-raid-monitor-ua.js`**: add `fullAlertThreshold` to `defaults`; add `totalPartsByOblast` to instance state; extend `loadRegions()`'s tree walk to tally it; rework `getRegionStatuses()` to use the ratio.
+- **Create `test-support/load-air-raid-module.js`**: shared loader that stubs the global `Module.register`/`Log` MagicMirror provides at runtime, `require`s the real module file, and returns its captured definition object. Lives outside `test/` deliberately — verified empirically that `node --test`'s default file discovery recursively sweeps up *any* file under a directory literally named `test`/`tests` (even plain, non-test helper files, which then show up as harmless but confusing zero-assertion "passing" entries); a sibling `test-support/` directory is not swept.
 - **Create `test/load-regions.test.js`**: unit tests for the `/regions`-tree tally (`regionToOblast` + `totalPartsByOblast`), with a synthetic `fetchLocal` stub — no network, no real MagicMirror runtime.
 - **Create `test/get-region-statuses.test.js`**: unit tests for the ratio-based full/partial/self-alert logic in `getRegionStatuses()`.
 
-Both test files load the real module definition by stubbing the global `Module.register` MagicMirror provides at runtime (this repo has no test harness yet, so each file defines this loader inline — see Task 1 for the exact code — rather than introducing a shared support file, to avoid Node's default `node --test` file-discovery picking up a non-test helper file under `test/`).
+Both test files `require('../test-support/load-air-raid-module')` rather than duplicating the loader (this repo has no test harness yet, so this is a new pattern). Run the whole suite with plain `node --test` (no path argument) from the repo root — `node --test test/` was tried and errors out (`Cannot find module '.../test'`) because Node treats a positional directory argument as a module path to resolve, not a discovery root; only the no-argument form uses default recursive discovery.
 
 ---
 
 ### Task 1: `loadRegions` tallies `totalPartsByOblast`
 
 **Files:**
+- Create: `test-support/load-air-raid-module.js`
 - Create: `test/load-regions.test.js`
 - Modify: `MagicMirror-air-raid-monitor-ua.js:64` (instance state block), `MagicMirror-air-raid-monitor-ua.js:131-151` (`loadRegions`)
 
 **Interfaces:**
-- Produces: `this.totalPartsByOblast` (`Object<string, number>`) — oblastId → count of descendant District/Community nodes (and the two mistyped top-level communities, `564`/`1293`), rebuilt alongside `this.regionToOblast` on the same weekly cache cycle.
+- Produces: `this.totalPartsByOblast` (`Object<string, number>`) — oblastId → count of descendant District/Community nodes (and the two mistyped top-level communities, `564`/`1293`), rebuilt alongside `this.regionToOblast` on the same weekly cache cycle. Also produces the shared `test-support/load-air-raid-module.js` helper (`module.exports = function loadAirRaidModule()`), reused by Task 2.
 - Consumes: existing `this.fetchLocal('/regions')` (unchanged contract: `{ states: [...] }`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the shared test-loader helper**
 
-Create `test/load-regions.test.js`:
+Create `test-support/load-air-raid-module.js`:
 
 ```js
 'use strict';
 
-const test = require('node:test');
-const assert = require('node:assert/strict');
-
-function loadAirRaidModule() {
+// Stubs the global `Module.register` / `Log` that MagicMirror provides at
+// runtime, requires the real module source, and returns its captured
+// definition object so plain node:test files can call its methods directly
+// without a full MagicMirror runtime.
+module.exports = function loadAirRaidModule() {
 	let definition = null;
 	global.Module = { register(name, def) { definition = def; } };
 	global.Log = { info() {}, error() {}, log() {} };
@@ -62,7 +65,19 @@ function loadAirRaidModule() {
 	delete global.Log;
 
 	return definition;
-}
+};
+```
+
+- [ ] **Step 2: Write the failing test**
+
+Create `test/load-regions.test.js`:
+
+```js
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const loadAirRaidModule = require('../test-support/load-air-raid-module');
 
 const moduleDefinition = loadAirRaidModule();
 
@@ -133,12 +148,12 @@ test('loadRegions tallies regionToOblast and totalPartsByOblast from the /region
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `node --test test/load-regions.test.js`
 Expected: FAIL — `AssertionError` comparing `instance.totalPartsByOblast` (`null`, since `loadRegions` doesn't set that property yet) against the expected object.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 In `MagicMirror-air-raid-monitor-ua.js`, add `totalPartsByOblast: null,` to the instance state block (right after `regionToOblast: null,`):
 
@@ -179,15 +194,15 @@ Replace the body of `loadRegions`:
 	},
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 5: Run the test to verify it passes**
 
 Run: `node --test test/load-regions.test.js`
 Expected: PASS — 1 test, 0 failures.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add MagicMirror-air-raid-monitor-ua.js test/load-regions.test.js
+git add MagicMirror-air-raid-monitor-ua.js test-support/load-air-raid-module.js test/load-regions.test.js
 git commit -m "$(cat <<'EOF'
 Tally per-oblast part counts while building the regions map
 
@@ -210,7 +225,7 @@ EOF
 - Modify: `MagicMirror-air-raid-monitor-ua.js:53-57` (`defaults`), `MagicMirror-air-raid-monitor-ua.js:222-249` (`getRegionStatuses`)
 
 **Interfaces:**
-- Consumes: `this.regionToOblast`, `this.totalPartsByOblast` (from Task 1), `this.airRaidData`, `this.config.fullAlertThreshold`.
+- Consumes: `this.regionToOblast`, `this.totalPartsByOblast` (from Task 1), `this.airRaidData`, `this.config.fullAlertThreshold`, and the shared `test-support/load-air-raid-module.js` helper (from Task 1).
 - Produces: unchanged public shape — `{ svgRegionName: 'full' | 'partial' }` — consumed as before by `getMapStyles()`.
 
 - [ ] **Step 1: Write the failing test**
@@ -222,20 +237,7 @@ Create `test/get-region-statuses.test.js`:
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-
-function loadAirRaidModule() {
-	let definition = null;
-	global.Module = { register(name, def) { definition = def; } };
-	global.Log = { info() {}, error() {}, log() {} };
-
-	delete require.cache[require.resolve('../MagicMirror-air-raid-monitor-ua.js')];
-	require('../MagicMirror-air-raid-monitor-ua.js');
-
-	delete global.Module;
-	delete global.Log;
-
-	return definition;
-}
+const loadAirRaidModule = require('../test-support/load-air-raid-module');
 
 const moduleDefinition = loadAirRaidModule();
 
@@ -418,9 +420,9 @@ Replace `getRegionStatuses`:
 Run: `node --test test/get-region-statuses.test.js`
 Expected: PASS — 8 tests, 0 failures.
 
-Then run the full suite to confirm no regression in Task 1's test:
+Then run the full suite (plain `node --test`, no path argument, from the repo root — a directory path argument like `test/` errors with `Cannot find module`) to confirm no regression in Task 1's test:
 
-Run: `node --test test/`
+Run: `node --test`
 Expected: PASS — 9 tests total, 0 failures.
 
 - [ ] **Step 5: Commit**
