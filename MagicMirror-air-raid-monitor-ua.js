@@ -54,6 +54,9 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		// The API rate-limits each key to roughly 1 request/minute (exceeding it
 		// returns empty 401s), so polling faster than 60s locks the module out.
 		updateInterval: 60 * 1.5, // seconds, also the minimum
+		// An oblast is painted "full" once more than this fraction of its
+		// districts/communities have an active alert of their own.
+		fullAlertThreshold: 0.5,
 	},
 
 	isLoading: false,
@@ -225,13 +228,18 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		}
 	},
 
-	// Turns the API's alert entries into { svgRegionName: status }: an oblast's own
-	// alert marks it "full", an alert in any of its districts/communities — "partial".
+	// Turns the API's alert entries into { svgRegionName: status }: an oblast's
+	// own alert always marks it "full"; otherwise it's "full" once more than
+	// config.fullAlertThreshold of its districts/communities have an alert of
+	// their own, else "partial" for any lesser fraction.
 	getRegionStatuses: function () {
 		const result = {};
 		if (!Array.isArray(this.airRaidData) || !this.regionToOblast) {
 			return result;
 		}
+
+		const selfAlertedOblasts = new Set();
+		const alertedPartsByOblast = {};
 
 		this.airRaidData.forEach(entry => {
 			if (!entry.activeAlerts?.length) {
@@ -239,16 +247,32 @@ Module.register(AIR_RAID_MODULE_NAME, {
 			}
 
 			const oblastId = this.regionToOblast[entry.regionId];
+			if (!oblastId) {
+				return;
+			}
+
+			if (entry.regionId === oblastId) {
+				selfAlertedOblasts.add(oblastId);
+			} else {
+				alertedPartsByOblast[oblastId] = (alertedPartsByOblast[oblastId] || 0) + 1;
+			}
+		});
+
+		const alertedOblastIds = new Set([...selfAlertedOblasts, ...Object.keys(alertedPartsByOblast)]);
+		alertedOblastIds.forEach(oblastId => {
 			const svgName = OBLAST_ID_TO_SVG_NAME[oblastId];
 			if (!svgName) {
 				return;
 			}
 
-			if (entry.regionId === oblastId) {
+			if (selfAlertedOblasts.has(oblastId)) {
 				result[svgName] = this.status.full;
-			} else if (result[svgName] !== this.status.full) {
-				result[svgName] = this.status.partial;
+				return;
 			}
+
+			const totalParts = this.totalPartsByOblast?.[oblastId] || 0;
+			const ratio = totalParts > 0 ? alertedPartsByOblast[oblastId] / totalParts : 0;
+			result[svgName] = ratio > this.config.fullAlertThreshold ? this.status.full : this.status.partial;
 		});
 
 		return result;
