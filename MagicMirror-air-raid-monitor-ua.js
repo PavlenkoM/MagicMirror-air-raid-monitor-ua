@@ -130,8 +130,9 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		return this.mapSVG;
 	},
 
-	// Builds regionId -> oblast regionId from the /regions hierarchy. Cached by the
-	// node_helper, so only the first request after a MagicMirror start goes upstream.
+	// Builds regionId -> oblast regionId, and oblastId -> descendant part count,
+	// from the /regions hierarchy. Cached by the node_helper, so only the first
+	// request after a MagicMirror start goes upstream.
 	loadRegions: async function() {
 		if (this.regionToOblast && Date.now() - this.regionsLoadedAt < REGIONS_REFRESH_INTERVAL) {
 			return;
