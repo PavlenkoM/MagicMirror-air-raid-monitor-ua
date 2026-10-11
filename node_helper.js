@@ -26,7 +26,6 @@ module.exports = NodeHelper.create({
 
 	start: function() {
 		this.expressApp.get("/alerts", this.proxyTo(AIR_RAID_API));
-		this.expressApp.get("/status", this.proxyTo(`${AIR_RAID_API}/status`));
 		this.expressApp.get("/regions", this.fetchRegions.bind(this));
 	},
 

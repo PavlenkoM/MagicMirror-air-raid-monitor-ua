@@ -61,9 +61,9 @@ Module.register(AIR_RAID_MODULE_NAME, {
 
 	isLoading: false,
 	airRaidData: [],
+	hasLoadedAlerts: false,
 	requestTimer: null,
 	mapSVG: null,
-	storedActionIndex: null,
 	regionToOblast: null,
 	totalPartsByOblast: null,
 	childrenByRegionId: null,
@@ -172,51 +172,40 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		await this.loadRegions();
 		const regionsJustLoaded = !hadRegions && Boolean(this.regionToOblast);
 
-		const shouldUpdateStatus = await this.shouldUpdateStatus();
-
-		if (!shouldUpdateStatus) {
-			// The map renders gray while the regions hierarchy is missing, so a late
-			// /regions arrival must trigger a re-render even without new alert data.
-			if (regionsJustLoaded) {
-				this.updateDom();
-			}
-			return;
+		// The loader covers the map, so show it only until the first alerts arrive:
+		// with a fetch every cycle it would otherwise blink on every update.
+		const isFirstLoad = !this.hasLoadedAlerts;
+		if (isFirstLoad) {
+			this.isLoading = true;
+			this.updateDom();
 		}
 
-		this.isLoading = true;
-		this.updateDom();
-
+		// One API request per cycle. The API answers 401 to a second request sent
+		// within seconds, so a /status pre-check before /alerts made /alerts fail
+		// whenever anything had changed.
+		let isChanged = false;
 		try {
-			this.airRaidData = await this.fetchLocal('/alerts');
+			const airRaidData = await this.fetchLocal('/alerts');
+			isChanged = JSON.stringify(airRaidData) !== JSON.stringify(this.airRaidData);
+			this.airRaidData = airRaidData;
+			this.hasLoadedAlerts = true;
 
-			const activeRegions = Array.isArray(this.airRaidData)
-				? this.airRaidData.filter(region => region.activeAlerts?.length)
-				: [];
-			Log.info(`Air raid alerts: ${activeRegions.length} region(s) with active alerts`, this.airRaidData);
+			if (isChanged) {
+				const activeRegions = Array.isArray(airRaidData)
+					? airRaidData.filter(region => region.activeAlerts?.length)
+					: [];
+				Log.info(`Air raid alerts: ${activeRegions.length} region(s) with active alerts`, airRaidData);
+			}
 		} catch(e) {
+			// Keep showing the last alerts; the next cycle retries.
 			Log.error(e);
-			// The action index is already committed, so without a reset the next cycle
-			// would see "no change" and this failed /alerts fetch would never be retried.
-			this.storedActionIndex = null;
 		}
 
 		this.isLoading = false;
-		this.updateDom();
-	},
-
-	shouldUpdateStatus: async function() {
-		try {
-			const { lastActionIndex } = await this.fetchLocal('/status');
-			const shouldUpdate = this.storedActionIndex !== lastActionIndex;
-
-			this.storedActionIndex = lastActionIndex;
-
-			return shouldUpdate;
-		} catch(e) {
-			Log.error(e);
-			// Skip the /alerts call this cycle: a failed /status is usually the API
-			// rate limiter, and another request would keep the key locked out.
-			return false;
+		// The map renders gray while the regions hierarchy is missing, so a late
+		// /regions arrival must trigger a re-render even without new alert data.
+		if (isFirstLoad || isChanged || regionsJustLoaded) {
+			this.updateDom();
 		}
 	},
 
