@@ -13,31 +13,39 @@ const API_HEADERS = {
 	'Accept': 'application/json',
 };
 const AIR_RAID_API_BASE = "https://api.ukrainealarm.com/api/v3";
-const AIR_RAID_API = `${AIR_RAID_API_BASE}/alerts`;
+
+// A relay is polled every few seconds, so a hung request must not outlive the
+// next cycle and pile up behind it.
+const RELAY_TIMEOUT = 8 * 1000;
 
 // The regions hierarchy survives restarts on disk: the API allows a burst of only
 // ~2 requests, and refetching it on every start would waste one of them.
 const REGIONS_CACHE_FILE = path.join(__dirname, ".regions-cache.json");
 const REGIONS_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // administrative changes are rare
 
+// Two data sources, picked per request by the headers the front end sends:
+// - direct: `Authorization: <apiKey>`, straight to the UkraineAlarm API;
+// - relay: `X-Relay-Url` + `X-Relay-Token`, to the user's own server, which
+//   serves `${relayUrl}/alerts` and `${relayUrl}/regions` in the API's format.
 module.exports = NodeHelper.create({
 	regionsCache: null,
 	regionsCacheTime: 0,
+	regionsCacheFile: REGIONS_CACHE_FILE,
+	// relay endpoint URL -> { etag, data } of its last 200 response
+	relayResponses: null,
 
 	start: function() {
-		this.expressApp.get("/alerts", this.proxyTo(AIR_RAID_API));
+		this.relayResponses = new Map();
+		this.expressApp.get("/alerts", this.fetchAlerts.bind(this));
 		this.expressApp.get("/regions", this.fetchRegions.bind(this));
 	},
 
-	proxyTo: function(url) {
-		return async (req, res) => {
-			try {
-				res.send(await this.fetchRemoteData(url, req.headers['authorization']));
-			} catch (e) {
-				Log.error(e);
-				res.status(500).send({ error: e.message });
-			}
-		};
+	fetchAlerts: async function(req, res) {
+		try {
+			res.send(await this.fetchUpstream(req, '/alerts'));
+		} catch (e) {
+			this.sendError(res, e);
+		}
 	},
 
 	fetchRegions: async function(req, res) {
@@ -53,38 +61,106 @@ module.exports = NodeHelper.create({
 		}
 
 		try {
-			const regions = await this.fetchRemoteData(
-				`${AIR_RAID_API_BASE}/regions`,
-				req.headers['authorization']
-			);
+			const regions = await this.fetchUpstream(req, '/regions');
 			this.regionsCache = regions;
 			this.regionsCacheTime = Date.now();
 			try {
-				fs.writeFileSync(REGIONS_CACHE_FILE, JSON.stringify(regions));
+				fs.writeFileSync(this.regionsCacheFile, JSON.stringify(regions));
 			} catch (e) {
 				Log.error(`Could not write regions cache: ${e.message}`);
 			}
 			res.send(regions);
 		} catch (e) {
-			Log.error(e);
 			// A stale hierarchy beats an error: the refetch usually fails because of
 			// the API rate limiter, and administrative changes are rare anyway.
-			if (this.regionsCache) {
+			// A misconfigured relayUrl is still reported, so it does not go unnoticed.
+			if (this.regionsCache && !e.status) {
+				Log.error(e);
 				res.send(this.regionsCache);
 				return;
 			}
-			res.status(500).send({ error: e.message });
+			this.sendError(res, e);
 		}
+	},
+
+	sendError: function(res, e) {
+		Log.error(e);
+		res.status(e.status || 500).send({ error: e.message });
 	},
 
 	readRegionsCacheFile: function() {
 		try {
-			const { mtimeMs } = fs.statSync(REGIONS_CACHE_FILE);
-			this.regionsCache = JSON.parse(fs.readFileSync(REGIONS_CACHE_FILE, 'utf8'));
+			const { mtimeMs } = fs.statSync(this.regionsCacheFile);
+			this.regionsCache = JSON.parse(fs.readFileSync(this.regionsCacheFile, 'utf8'));
 			this.regionsCacheTime = mtimeMs;
 		} catch (e) {
 			// no usable cache file yet
 		}
+	},
+
+	fetchUpstream: function(req, endpoint) {
+		const relayUrl = req.headers['x-relay-url'];
+		if (relayUrl) {
+			return this.fetchFromRelay(relayUrl, req.headers['x-relay-token'], endpoint);
+		}
+		return this.fetchRemoteData(`${AIR_RAID_API_BASE}${endpoint}`, req.headers['authorization']);
+	},
+
+	// `${relayUrl}${endpoint}`; throws a 400 error for anything but a plain
+	// http(s) base URL, since the token has its own option and header.
+	relayEndpoint: function(relayUrl, endpoint) {
+		let parsed;
+		try {
+			parsed = new URL(relayUrl);
+		} catch (e) {
+			parsed = null;
+		}
+		if (!parsed || !['http:', 'https:'].includes(parsed.protocol) || parsed.search || parsed.hash) {
+			const error = new Error(`Invalid relayUrl "${relayUrl}": expected an http(s) base URL without "?" or "#"`);
+			error.status = 400;
+			throw error;
+		}
+		return `${relayUrl.replace(/\/+$/, '')}${endpoint}`;
+	},
+
+	// Conditional GET: the relay answers an unchanged resource with an empty
+	// 304, so frequent polling costs a few hundred bytes per cycle.
+	fetchFromRelay: async function(relayUrl, token, endpoint) {
+		const url = this.relayEndpoint(relayUrl, endpoint);
+		if (!this.relayResponses) {
+			this.relayResponses = new Map();
+		}
+		const cached = this.relayResponses.get(url);
+
+		const headers = {
+			...API_HEADERS,
+			'X-Relay-Token': token || '',
+		};
+		if (cached) {
+			headers['If-None-Match'] = cached.etag;
+		}
+
+		const response = await fetch(url, {
+			headers,
+			signal: AbortSignal.timeout(RELAY_TIMEOUT),
+		});
+
+		if (response.status === 304 && cached) {
+			return cached.data;
+		}
+		if (!response.ok) {
+			const hint = response.status === 401 ? ' (check relayToken)' : '';
+			throw new Error(`Relay request to ${url} failed.\nStatus Code: ${response.status}${hint}`);
+		}
+
+		const data = await response.json();
+		const etag = response.headers.get('etag');
+		if (etag) {
+			this.relayResponses.set(url, { etag, data });
+		} else {
+			this.relayResponses.delete(url);
+		}
+		return data;
 	},
 
 	fetchRemoteData: async function(url, apiKey) {

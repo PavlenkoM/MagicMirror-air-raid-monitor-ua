@@ -41,6 +41,14 @@ const TOP_LEVEL_COMMUNITY_TO_OBLAST = {
 // How often to re-request the regions hierarchy; administrative changes are rare.
 const REGIONS_REFRESH_INTERVAL = 7 * 24 * 60 * 60 * 1000;
 
+// Minimum (and default) updateInterval per data source, in seconds. The API
+// rate-limits each key to roughly 1 request/minute (exceeding it returns
+// errors), so polling it faster than 60s locks the module out; the 90s keep a
+// safety margin. A relay serves any number of clients and answers unchanged
+// data with a tiny 304, so it can be polled far more often.
+const DIRECT_MIN_UPDATE_INTERVAL = 90;
+const RELAY_MIN_UPDATE_INTERVAL = 10;
+
 Module.register(AIR_RAID_MODULE_NAME, {
 	requiresVersion: "2.19.0",
 	styleSelectorPrefix: 'air-raid-status',
@@ -51,9 +59,14 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	},
 
 	defaults: {
-		// The API rate-limits each key to roughly 1 request/minute (exceeding it
-		// returns empty 401s), so polling faster than 60s locks the module out.
-		updateInterval: 60 * 1.5, // seconds, also the minimum
+		// Direct mode: your UkraineAlarm API key.
+		apiKey: null,
+		// Relay mode: base URL of your own server (e.g. "https://example.com/v1")
+		// and its read token. A set relayUrl takes precedence over apiKey.
+		relayUrl: null,
+		relayToken: null,
+		// Seconds; null means the minimum of the active mode (see above).
+		updateInterval: null,
 		// An oblast is painted "full" once more than this fraction of its
 		// districts/communities have an active alert of their own.
 		fullAlertThreshold: 0.5,
@@ -76,6 +89,14 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	},
 
 	start: function() {
+		if (this.isRelayMode()) {
+			if (!this.config.relayToken) {
+				Log.error(`${AIR_RAID_MODULE_NAME}: relayUrl is set but relayToken is empty`);
+			}
+		} else if (!this.config.apiKey) {
+			Log.error(`${AIR_RAID_MODULE_NAME}: set either apiKey or relayUrl + relayToken`);
+		}
+
 		this.loadAirRaidData();
 		this.initLoaderTimer();
 	},
@@ -97,16 +118,33 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		return wrapper;
 	},
 
-	getUpdateTimerInterval: function() {
-		return Math.max(this.config.updateInterval, this.defaults.updateInterval) * 1000;
+	isRelayMode: function() {
+		return Boolean(this.config.relayUrl);
 	},
 
-	// All node_helper routes share the auth header and error contract.
+	getUpdateTimerInterval: function() {
+		const minimum = this.isRelayMode() ? RELAY_MIN_UPDATE_INTERVAL : DIRECT_MIN_UPDATE_INTERVAL;
+		const requested = Number(this.config.updateInterval) || 0;
+		return Math.max(requested, minimum) * 1000;
+	},
+
+	// The node_helper picks the data source from these headers.
+	getRequestHeaders: function() {
+		if (this.isRelayMode()) {
+			return {
+				'X-Relay-Url': this.config.relayUrl,
+				'X-Relay-Token': this.config.relayToken || '',
+			};
+		}
+		return {
+			'Authorization': this.config.apiKey,
+		};
+	},
+
+	// All node_helper routes share the auth headers and error contract.
 	fetchLocal: async function(path) {
 		const response = await fetch(path, {
-			headers: {
-				'Authorization': this.config.apiKey,
-			}
+			headers: this.getRequestHeaders(),
 		});
 
 		if (!response.ok) {
