@@ -6,6 +6,16 @@ Based on data from the [UkraineAlarm API](https://www.ukrainealarm.com/). The mo
 - **Directly from the API** with your own API key. Simple, but the API allows about one request per minute per key, so the map updates every 90 seconds at best and every device needs its own key.
 - **From your own server** that fetches the data from the API once and serves it to any number of devices (see [Using your own server](#using-your-own-server)). The map can update every 10 seconds.
 
+|  | Directly from the API (`apiKey`) | From your own server (`relayUrl`) |
+| --- | --- | --- |
+| What you need | A UkraineAlarm API key ([request one](https://api.ukrainealarm.com/), it is sent by email) | A server that follows the [contract](#using-your-own-server), with its own API key |
+| Devices per API key | One — every device polling the API uses up the key's limit | Any number, each with its own read token |
+| Update interval | 90 seconds minimum | 10 seconds minimum |
+| How fresh the map is | Up to ~1.5 minutes behind | Seconds behind, if the server receives UkraineAlarm webhooks |
+| API key on the device | Yes | No |
+| Out-of-date notice (`staleAfter`) | When updates keep failing | Also when the server itself has stopped syncing (needs `X-Relay-Synced-At`) |
+| Setup | Nothing beyond the module | Running and maintaining the server |
+
 <img width="328" alt="Знімок екрана 2022-05-31 о 22 59 29" src="https://user-images.githubusercontent.com/9430298/171278252-afbf185c-b40f-4214-8292-6fa9d43af002.png">
 
 
@@ -38,6 +48,7 @@ modules: [
 			relayToken: 'YOUR_DEVICE_TOKEN',
 			updateInterval: 10,
 			fullAlertThreshold: 0.5,
+			staleAfter: 10,
 		}
 	}
 ]
