@@ -49,6 +49,10 @@ const REGIONS_REFRESH_INTERVAL = 7 * 24 * 60 * 60 * 1000;
 const DIRECT_MIN_UPDATE_INTERVAL = 90;
 const RELAY_MIN_UPDATE_INTERVAL = 10;
 
+// Set by the node_helper on /alerts: when the data was last confirmed current
+// (the relay's last full sync, or the fetch time in direct mode).
+const AS_OF_HEADER = 'X-Data-As-Of';
+
 Module.register(AIR_RAID_MODULE_NAME, {
 	requiresVersion: "2.19.0",
 	styleSelectorPrefix: 'air-raid-status',
@@ -70,6 +74,10 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		// An oblast is painted "full" once more than this fraction of its
 		// districts/communities have an active alert of their own.
 		fullAlertThreshold: 0.5,
+		// Minutes. When the data is older than this (failed updates, or a relay
+		// that has not synced with the API), the map is dimmed and a notice
+		// shows its age. 0 turns the notice off.
+		staleAfter: 10,
 	},
 
 	isLoading: false,
@@ -81,6 +89,11 @@ Module.register(AIR_RAID_MODULE_NAME, {
 	totalPartsByOblast: null,
 	childrenByRegionId: null,
 	regionsLoadedAt: 0,
+	// ms timestamps: when the shown alerts were last confirmed current, and module start
+	dataAsOf: null,
+	startedAt: 0,
+	lastResponseAsOf: null,
+	renderedStaleNotice: '',
 
 	getStyles: function() {
 		return [
@@ -97,6 +110,7 @@ Module.register(AIR_RAID_MODULE_NAME, {
 			Log.error(`${AIR_RAID_MODULE_NAME}: set either apiKey or relayUrl + relayToken`);
 		}
 
+		this.startedAt = Date.now();
 		this.loadAirRaidData();
 		this.initLoaderTimer();
 	},
@@ -109,7 +123,16 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		const wrapper = document.createElement("div");
 		wrapper.className = `${AIR_RAID_MODULE_NAME}-wrapper`;
 
+		const staleNotice = this.getStaleNotice();
+		this.renderedStaleNotice = staleNotice;
+		if (staleNotice) {
+			wrapper.classList.add('is-stale');
+		}
+
 		let content = await this.mapTemplate();
+		if (staleNotice) {
+			content += `<div class="air-raid-stale">${staleNotice}</div>`;
+		}
 		if (this.isLoading) {
 			content += this.getPreloaderLoader();
 		}
@@ -151,7 +174,39 @@ Module.register(AIR_RAID_MODULE_NAME, {
 			throw new Error(`Response status: ${response.status}`);
 		}
 
+		this.lastResponseAsOf = response.headers.get(AS_OF_HEADER);
 		return response.json();
+	},
+
+	isDataStale: function(now = Date.now()) {
+		const staleAfter = Number(this.config.staleAfter) || 0;
+		if (staleAfter <= 0) {
+			return false;
+		}
+		// Before the first data arrives, count from the module start.
+		return now - (this.dataAsOf ?? this.startedAt) > staleAfter * 60 * 1000;
+	},
+
+	// '' while the data is fresh; otherwise a line saying how old it is.
+	getStaleNotice: function(now = Date.now()) {
+		if (!this.isDataStale(now)) {
+			return '';
+		}
+		if (this.dataAsOf === null) {
+			return this.translate('stale_no_data');
+		}
+		return this.translate('stale', { time: this.formatAsOf(this.dataAsOf, now) });
+	},
+
+	// "14:05" for today, "28.10 14:05" for an earlier day (local time).
+	formatAsOf: function(timestamp, now = Date.now()) {
+		const date = new Date(timestamp);
+		const pad = value => String(value).padStart(2, '0');
+		const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+		if (date.toDateString() === new Date(now).toDateString()) {
+			return time;
+		}
+		return `${pad(date.getDate())}.${pad(date.getMonth() + 1)} ${time}`;
 	},
 
 	getMapSVG: async function() {
@@ -223,10 +278,13 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		// whenever anything had changed.
 		let isChanged = false;
 		try {
+			this.lastResponseAsOf = null;
 			const airRaidData = await this.fetchLocal('/alerts');
 			isChanged = JSON.stringify(airRaidData) !== JSON.stringify(this.airRaidData);
 			this.airRaidData = airRaidData;
 			this.hasLoadedAlerts = true;
+			const asOf = Date.parse(this.lastResponseAsOf);
+			this.dataAsOf = Number.isNaN(asOf) ? Date.now() : asOf;
 
 			if (isChanged) {
 				const activeRegions = Array.isArray(airRaidData)
@@ -242,7 +300,9 @@ Module.register(AIR_RAID_MODULE_NAME, {
 		this.isLoading = false;
 		// The map renders gray while the regions hierarchy is missing, so a late
 		// /regions arrival must trigger a re-render even without new alert data.
-		if (isFirstLoad || isChanged || regionsJustLoaded) {
+		// The stale notice appears, changes or goes away without any new data.
+		const staleNoticeChanged = this.getStaleNotice() !== this.renderedStaleNotice;
+		if (isFirstLoad || isChanged || regionsJustLoaded || staleNoticeChanged) {
 			this.updateDom();
 		}
 	},

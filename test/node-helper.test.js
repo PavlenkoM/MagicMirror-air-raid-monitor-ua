@@ -41,24 +41,36 @@ function setup(t, responses) {
 	return { helper, requests };
 }
 
-function json(data, { status = 200, etag } = {}) {
-	return new Response(JSON.stringify(data), {
-		status,
-		headers: etag ? { 'Content-Type': 'application/json', ETag: etag } : { 'Content-Type': 'application/json' },
-	});
+function json(data, { status = 200, etag, syncedAt } = {}) {
+	const headers = { 'Content-Type': 'application/json' };
+	if (etag) {
+		headers.ETag = etag;
+	}
+	if (syncedAt) {
+		headers['X-Relay-Synced-At'] = syncedAt;
+	}
+	return new Response(JSON.stringify(data), { status, headers });
 }
 
-function notModified() {
-	return new Response(null, { status: 304 });
+function notModified({ syncedAt } = {}) {
+	return new Response(null, { status: 304, headers: syncedAt ? { 'X-Relay-Synced-At': syncedAt } : {} });
 }
 
 function fakeRes() {
 	return {
 		statusCode: 200,
 		body: undefined,
+		headers: {},
 		status(code) { this.statusCode = code; return this; },
+		set(name, value) { this.headers[name] = value; return this; },
 		send(body) { this.body = body; return this; },
 	};
+}
+
+// The X-Data-As-Of value is "now" (a fresh ISO timestamp) rather than a relay's.
+function assertAsOfNow(res) {
+	const asOf = Date.parse(res.headers['X-Data-As-Of']);
+	assert.ok(Math.abs(Date.now() - asOf) < 5000, `expected about now, got ${res.headers['X-Data-As-Of']}`);
 }
 
 const directReq = { headers: { authorization: 'api-key' } };
@@ -215,4 +227,62 @@ test('relay mode: a malformed relayUrl is reported even with a stale regions cac
 	await helper.fetchRegions(relayReq('ftp://relay.example'), res);
 
 	assert.equal(res.statusCode, 400);
+});
+
+test('direct mode: /alerts carries X-Data-As-Of = fetch time', async (t) => {
+	const { helper } = setup(t, [json(ALERTS, { syncedAt: '2020-01-01T00:00:00Z' })]);
+	const res = fakeRes();
+
+	await helper.fetchAlerts(directReq, res);
+
+	assertAsOfNow(res);
+});
+
+test('relay mode: X-Relay-Synced-At is passed on as X-Data-As-Of, body unchanged', async (t) => {
+	const { helper } = setup(t, [json(ALERTS, { etag: '"v1"', syncedAt: '2026-10-28T21:00:00Z' })]);
+	const res = fakeRes();
+
+	await helper.fetchAlerts(relayReq(), res);
+
+	assert.equal(res.headers['X-Data-As-Of'], '2026-10-28T21:00:00Z');
+	assert.deepEqual(res.body, ALERTS);
+});
+
+test('relay mode: a 304 refreshes X-Data-As-Of from the relay, or keeps the last one', async (t) => {
+	const { helper } = setup(t, [
+		json(ALERTS, { etag: '"v1"', syncedAt: '2026-10-28T21:00:00Z' }),
+		notModified({ syncedAt: '2026-10-28T21:02:00Z' }),
+		notModified(),
+	]);
+
+	await helper.fetchAlerts(relayReq(), fakeRes());
+	const confirmed = fakeRes();
+	await helper.fetchAlerts(relayReq(), confirmed);
+	const silent = fakeRes();
+	await helper.fetchAlerts(relayReq(), silent);
+
+	assert.equal(confirmed.headers['X-Data-As-Of'], '2026-10-28T21:02:00Z');
+	assert.deepEqual(confirmed.body, ALERTS);
+	assert.equal(silent.headers['X-Data-As-Of'], '2026-10-28T21:02:00Z');
+});
+
+test('relay mode: no or malformed X-Relay-Synced-At falls back to the fetch time', async (t) => {
+	for (const syncedAt of [undefined, 'yesterday-ish']) {
+		const { helper } = setup(t, [json(ALERTS, { syncedAt })]);
+		const res = fakeRes();
+
+		await helper.fetchAlerts(relayReq(), res);
+
+		assertAsOfNow(res);
+	}
+});
+
+test('a failed /alerts request sets no X-Data-As-Of', async (t) => {
+	const { helper } = setup(t, [json({}, { status: 503 })]);
+	const res = fakeRes();
+
+	await helper.fetchAlerts(relayReq(), res);
+
+	assert.equal(res.statusCode, 500);
+	assert.equal(res.headers['X-Data-As-Of'], undefined);
 });

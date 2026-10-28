@@ -33,6 +33,21 @@
   border-radius: 50%;
 }
 
+.MagicMirror-air-raid-monitor-ua-wrapper.is-stale svg,
+.MagicMirror-air-raid-monitor-ua-wrapper.is-stale .graph-legend {
+  opacity: 0.4;
+}
+
+.air-raid-stale {
+  font-size: 0.75rem;
+  text-align: center;
+  margin-top: 0.3rem;
+}
+
+.air-raid-stale::before {
+  content: '⚠ ';
+}
+
 .preloader {
   position: absolute;
   bottom: 0;

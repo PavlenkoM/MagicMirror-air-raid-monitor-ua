@@ -71,5 +71,25 @@ The module appends `/alerts` and `/regions` to `relayUrl`:
 
 ## Out of scope (later stages)
 
-- Showing that relay data is stale (`X-Relay-Synced-At`, `/status`).
 - README section comparing both modes and describing the contract for users.
+
+## Stale data indicator (added 2026-10-29)
+
+- Contract addition (optional): the server sends `X-Relay-Synced-At` (ISO 8601)
+  with `/alerts`, on `200` and `304`, = when it last confirmed the data against
+  the API. Missing or unparsable → the fetch time is used.
+- **node_helper** answers its `/alerts` route with `X-Data-As-Of`: the relay's
+  `X-Relay-Synced-At` (a `304` without the header keeps the last known value),
+  or the fetch time in direct mode. The body is unchanged.
+- **Front end**: option `staleAfter` (minutes, default 10, `0` = off). The time
+  of the last successful `/alerts` is taken from `X-Data-As-Of`; a failed update
+  keeps it, so the data ages. Strictly older than `staleAfter` → the wrapper gets
+  `is-stale` (map and legend at 40 % opacity) and a notice `stale` ("Data is out
+  of date: as of {time}", `HH:MM`, or `DD.MM HH:MM` for an earlier day). Before
+  any data arrives, age counts from the module start and the notice is
+  `stale_no_data`. The DOM is re-rendered when the notice text changes, even
+  without new alert data.
+- 10 minutes versus the reference relay's normal `X-Relay-Synced-At` age of up
+  to ~3 minutes (full sync every 2 minutes): a few API failures in a row do not
+  trigger it, a long API outage or a dead relay does.
+

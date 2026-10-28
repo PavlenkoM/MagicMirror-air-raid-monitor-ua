@@ -53,6 +53,7 @@ The following properties can be configured:
 | `relayToken` | Read token for `relayUrl`, sent in the `X-Relay-Token` header. |
 | `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. With `apiKey`, the default and minimum is 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and rejects faster polling, so the module keeps a safety margin above that limit. With `relayUrl`, the default and minimum is 10 seconds. |
 | `fullAlertThreshold` | Fraction (0–1) of an oblast's districts/communities that must be under alert before the whole oblast is painted "full" instead of "partial". Strict greater-than (exactly at the threshold stays "partial"). Default `0.5`. |
+| `staleAfter` | Minutes. When the shown data is older than this — updates keep failing, or your server has not synced with the API — the map is dimmed and a notice below it says how old the data is ("Data is out of date: as of 21:00"). `0` turns this off. Default `10`. |
 
 ## Using your own server
 Any server works as long as it follows this contract. The module appends the endpoint paths to `relayUrl` (trailing slashes are ignored; `relayUrl` must not contain `?` or `#`):
@@ -64,6 +65,7 @@ Any server works as long as it follows this contract. The module appends the end
 
 - **Authorization:** the module sends `relayToken` in the `X-Relay-Token` header. Answer `401` to a missing or wrong token.
 - **Caching (optional, recommended):** if the response has an `ETag` header, the next request carries it in `If-None-Match`. Answer `304 Not Modified` with an empty body when the data has not changed, so frequent polling costs only a few hundred bytes.
+- **Freshness (optional, recommended):** send `X-Relay-Synced-At` (ISO 8601, e.g. `2026-10-28T21:00:00Z`) with `/alerts` responses, including `304`, set to when the server last confirmed its data against the API. The module uses it for `staleAfter`. Without it, the data counts as current whenever the server answers.
 - **Errors:** any other non-2xx status, an unreachable server, or no answer within 8 seconds counts as a failed update. The map keeps showing the last data and the module retries on the next cycle.
 - **Regions:** the module caches the `/regions` response on disk for 7 days, so the server is asked for it rarely.
 

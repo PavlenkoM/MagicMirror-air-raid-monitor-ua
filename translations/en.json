@@ -1,5 +1,7 @@
 {
 	"no_data": "No data",
 	"partial": "Partial",
-	"full": "Full"
+	"full": "Full",
+	"stale": "Data is out of date: as of {time}",
+	"stale_no_data": "No data received"
 }

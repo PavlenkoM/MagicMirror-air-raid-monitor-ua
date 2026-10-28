@@ -18,6 +18,11 @@ const AIR_RAID_API_BASE = "https://api.ukrainealarm.com/api/v3";
 // next cycle and pile up behind it.
 const RELAY_TIMEOUT = 8 * 1000;
 
+// Response header telling the front end how fresh the alerts are: the relay's
+// X-Relay-Synced-At (its last confirmed full sync), or the fetch time when the
+// data comes straight from the API or the relay does not send that header.
+const AS_OF_HEADER = 'X-Data-As-Of';
+
 // The regions hierarchy survives restarts on disk: the API allows a burst of only
 // ~2 requests, and refetching it on every start would waste one of them.
 const REGIONS_CACHE_FILE = path.join(__dirname, ".regions-cache.json");
@@ -31,7 +36,7 @@ module.exports = NodeHelper.create({
 	regionsCache: null,
 	regionsCacheTime: 0,
 	regionsCacheFile: REGIONS_CACHE_FILE,
-	// relay endpoint URL -> { etag, data } of its last 200 response
+	// relay endpoint URL -> { etag, data, syncedAt } of its last 200 (or 304) response
 	relayResponses: null,
 
 	start: function() {
@@ -42,7 +47,9 @@ module.exports = NodeHelper.create({
 
 	fetchAlerts: async function(req, res) {
 		try {
-			res.send(await this.fetchUpstream(req, '/alerts'));
+			const { data, syncedAt } = await this.fetchUpstream(req, '/alerts');
+			res.set(AS_OF_HEADER, syncedAt || new Date().toISOString());
+			res.send(data);
 		} catch (e) {
 			this.sendError(res, e);
 		}
@@ -61,7 +68,7 @@ module.exports = NodeHelper.create({
 		}
 
 		try {
-			const regions = await this.fetchUpstream(req, '/regions');
+			const { data: regions } = await this.fetchUpstream(req, '/regions');
 			this.regionsCache = regions;
 			this.regionsCacheTime = Date.now();
 			try {
@@ -98,12 +105,20 @@ module.exports = NodeHelper.create({
 		}
 	},
 
-	fetchUpstream: function(req, endpoint) {
+	// Resolves to { data, syncedAt }; syncedAt is null unless a relay reported it.
+	fetchUpstream: async function(req, endpoint) {
 		const relayUrl = req.headers['x-relay-url'];
 		if (relayUrl) {
 			return this.fetchFromRelay(relayUrl, req.headers['x-relay-token'], endpoint);
 		}
-		return this.fetchRemoteData(`${AIR_RAID_API_BASE}${endpoint}`, req.headers['authorization']);
+		const data = await this.fetchRemoteData(`${AIR_RAID_API_BASE}${endpoint}`, req.headers['authorization']);
+		return { data, syncedAt: null };
+	},
+
+	// A valid ISO timestamp from the X-Relay-Synced-At header, or null.
+	relaySyncedAt: function(response) {
+		const value = response.headers.get('x-relay-synced-at');
+		return value && !Number.isNaN(Date.parse(value)) ? value : null;
 	},
 
 	// `${relayUrl}${endpoint}`; throws a 400 error for anything but a plain
@@ -146,7 +161,9 @@ module.exports = NodeHelper.create({
 		});
 
 		if (response.status === 304 && cached) {
-			return cached.data;
+			// The body is unchanged, but the relay may have confirmed it since.
+			cached.syncedAt = this.relaySyncedAt(response) || cached.syncedAt;
+			return { data: cached.data, syncedAt: cached.syncedAt };
 		}
 		if (!response.ok) {
 			const hint = response.status === 401 ? ' (check relayToken)' : '';
@@ -154,13 +171,14 @@ module.exports = NodeHelper.create({
 		}
 
 		const data = await response.json();
+		const syncedAt = this.relaySyncedAt(response);
 		const etag = response.headers.get('etag');
 		if (etag) {
-			this.relayResponses.set(url, { etag, data });
+			this.relayResponses.set(url, { etag, data, syncedAt });
 		} else {
 			this.relayResponses.delete(url);
 		}
-		return data;
+		return { data, syncedAt };
 	},
 
 	fetchRemoteData: async function(url, apiKey) {
