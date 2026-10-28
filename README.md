@@ -28,8 +28,10 @@ The following properties can be configured:
 
 | Option | Description |
 | --- | --- |
-| `apiKey` | Your API key for accessing the air raid data. |
-| `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. Default and minimum value 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and answers faster polling with empty `401` responses, so the module keeps a safety margin above that limit. |
+| `apiKey` | Your API key for accessing the air raid data. Not needed when `relayUrl` is set. |
+| `relayUrl` | Optional. Base URL of your own server that serves `/alerts` and `/regions` in the UkraineAlarm API format (e.g. `https://example.com/v1`). When set, the module reads data from it instead of the API. |
+| `relayToken` | Read token for `relayUrl`, sent in the `X-Relay-Token` header. |
+| `updateInterval` | Interval of updating information about air raids in Ukraine. Value in seconds. With `apiKey`, the default and minimum is 90 seconds (lower values are ignored) — the UkraineAlarm API rate-limits each key to about one request per minute and rejects faster polling, so the module keeps a safety margin above that limit. With `relayUrl`, the default and minimum is 10 seconds. |
 | `fullAlertThreshold` | Fraction (0–1) of an oblast's districts/communities that must be under alert before the whole oblast is painted "full" instead of "partial". Strict greater-than (exactly at the threshold stays "partial"). Default `0.5`. |
 
 ## License
