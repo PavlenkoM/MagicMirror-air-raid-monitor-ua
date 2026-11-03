@@ -82,5 +82,8 @@ Any server works as long as it follows this contract. The module appends the end
 
 When `relayUrl` is set, the module uses the server even if `apiKey` is also present, and never sends the API key anywhere.
 
+## Documentation
+For people (and agents) who change the module: [docs/](docs/README.md) — [architecture](docs/architecture.md) (both data sources, caching, how the map is coloured, the out-of-date notice), [data model](docs/data-model.md) (fields the module reads, node_helper routes and headers, configuration) and [development](docs/development.md) (tests, common changes, releases). Earlier design documents are in [docs/history/](docs/history/).
+
 ## License
 This module is licensed under the [MIT License](LICENSE.md).
